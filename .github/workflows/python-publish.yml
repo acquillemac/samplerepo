@@ -1,70 +1,147 @@
-# This workflow will upload a Python Package to PyPI when a release is created
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python#publishing-to-package-registries
+import click
+import requests
+import json
 
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
+# Base URL for Artifactory API (replace with your instance URL)
+ARTIFACTORY_URL = "https://your-artifactory-instance.jfrog.io/artifactory"
 
-name: Upload Python Package
+# Global variable to hold the API token (from user login)
+api_token = None
 
-on:
-  release:
-    types: [published]
+# Helper function to authenticate using username/password and retrieve API token
+def authenticate(username, password):
+    url = f"{ARTIFACTORY_URL}/api/security/token"
+    data = {
+        'username': username,
+        'password': password,
+        'grant_type': 'password'
+    }
+    response = requests.post(url, data=data)
+    
+    if response.status_code == 200:
+        token = response.json().get("access_token")
+        return token
+    else:
+        click.echo("Authentication failed. Check your username/password.")
+        exit(1)
 
-permissions:
-  contents: read
+# Function to make API requests with the token
+def make_api_request(endpoint, method="GET", data=None):
+    headers = {
+        'Authorization': f'Bearer {api_token}',
+        'Content-Type': 'application/json'
+    }
+    
+    url = f"{ARTIFACTORY_URL}{endpoint}"
 
-jobs:
-  release-build:
-    runs-on: ubuntu-latest
+    if method == "GET":
+        response = requests.get(url, headers=headers)
+    elif method == "POST":
+        response = requests.post(url, headers=headers, data=json.dumps(data))
+    elif method == "PUT":
+        response = requests.put(url, headers=headers, data=json.dumps(data))
+    elif method == "DELETE":
+        response = requests.delete(url, headers=headers)
+    
+    if response.status_code in range(200, 299):
+        return response.json()
+    else:
+        click.echo(f"Error: {response.status_code} - {response.text}")
+        exit(1)
 
-    steps:
-      - uses: actions/checkout@v4
+# Command to ping the system
+@click.command()
+def ping():
+    """Ping the Artifactory system."""
+    result = make_api_request("/api/system/ping")
+    click.echo(result)
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
+# Command to get system version
+@click.command()
+def version():
+    """Get the Artifactory system version."""
+    result = make_api_request("/api/system/version")
+    click.echo(result)
 
-      - name: Build release distributions
-        run: |
-          # NOTE: put your own distribution build steps here.
-          python -m pip install build
-          python -m build
+# Command to create a new user
+@click.command()
+@click.argument('username')
+@click.argument('password')
+@click.argument('email')
+def create_user(username, password, email):
+    """Create a new user in Artifactory."""
+    data = {
+        "name": username,
+        "password": password,
+        "email": email
+    }
+    result = make_api_request("/api/security/users", method="POST", data=data)
+    click.echo(result)
 
-      - name: Upload distributions
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-dists
-          path: dist/
+# Command to delete a user
+@click.command()
+@click.argument('username')
+def delete_user(username):
+    """Delete an existing user."""
+    result = make_api_request(f"/api/security/users/{username}", method="DELETE")
+    click.echo(result)
 
-  pypi-publish:
-    runs-on: ubuntu-latest
-    needs:
-      - release-build
-    permissions:
-      # IMPORTANT: this permission is mandatory for trusted publishing
-      id-token: write
+# Command to get storage info
+@click.command()
+def storage_info():
+    """Get Artifactory storage information."""
+    result = make_api_request("/api/storageinfo")
+    click.echo(result)
 
-    # Dedicated environments with protections for publishing are strongly recommended.
-    # For more information, see: https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment#deployment-protection-rules
-    environment:
-      name: pypi
-      # OPTIONAL: uncomment and update to include your PyPI project URL in the deployment status:
-      # url: https://pypi.org/p/YOURPROJECT
-      #
-      # ALTERNATIVE: if your GitHub Release name is the PyPI project version string
-      # ALTERNATIVE: exactly, uncomment the following line instead:
-      # url: https://pypi.org/project/YOURPROJECT/${{ github.event.release.name }}
+# Command to create a repository
+@click.command()
+@click.argument('repo_key')
+@click.argument('repo_type')
+def create_repo(repo_key, repo_type):
+    """Create a repository."""
+    data = {
+        "rclass": "local",
+        "packageType": repo_type
+    }
+    result = make_api_request(f"/api/repositories/{repo_key}", method="POST", data=data)
+    click.echo(result)
 
-    steps:
-      - name: Retrieve release distributions
-        uses: actions/download-artifact@v4
-        with:
-          name: release-dists
-          path: dist/
+# Command to update a repository
+@click.command()
+@click.argument('repo_key')
+@click.argument('repo_type')
+def update_repo(repo_key, repo_type):
+    """Update an existing repository."""
+    data = {
+        "rclass": "local",
+        "packageType": repo_type
+    }
+    result = make_api_request(f"/api/repositories/{repo_key}", method="PUT", data=data)
+    click.echo(result)
 
-      - name: Publish release distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: dist/
+# Command to list repositories
+@click.command()
+def list_repos():
+    """List all repositories."""
+    result = make_api_request("/api/repositories")
+    click.echo(result)
+
+# Main CLI entry point
+@click.group()
+def cli():
+    """Artifactory CLI to interact with your Artifactory SaaS instance."""
+    pass
+
+# Add commands to the CLI group
+cli.add_command(ping)
+cli.add_command(version)
+cli.add_command(create_user)
+cli.add_command(delete_user)
+cli.add_command(storage_info)
+cli.add_command(create_repo)
+cli.add_command(update_repo)
+cli.add_command(list_repos)
+
+# CLI entry point to start the program
+if __name__ == '__main__':
+    cli()
